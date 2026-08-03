@@ -1676,21 +1676,42 @@ function saveData(data) {
     });
   }
 
-  // Sauvegarder en localStorage (immédiat)
-  localStorage.setItem('flashcards_data', JSON.stringify(data));
+  // Sauvegarder en localStorage (immédiat) — ne doit JAMAIS bloquer la sync Firebase,
+  // même si le quota du navigateur est dépassé (ex: trop d'images accumulées).
+  let localSaveOk = true;
+  try {
+    localStorage.setItem('flashcards_data', JSON.stringify(data));
+  } catch (e) {
+    localSaveOk = false;
+    console.error('Stockage local plein (localStorage) :', e);
+  }
 
   if (!isTeacherMode) {
-    updateSyncIndicator('offline');
+    updateSyncIndicator(localSaveOk ? 'offline' : 'error');
+    if (!localSaveOk) {
+      toast('⚠️ Mémoire de cet appareil pleine : l\'image n\'a pas pu être enregistrée. Essaie de libérer de la place ou change de navigateur.', 'error');
+    }
     return;
   }
 
-  // Mode enseignant : sync Firebase
+  // Mode enseignant : sync Firebase (source de vérité, indépendante du localStorage)
   updateSyncIndicator('saving');
   _isSaving = true;
   const timeout = setTimeout(() => { _isSaving = false; }, 3000);
   dataRef.set(data)
-    .then(() => { clearTimeout(timeout); _isSaving = false; updateSyncIndicator('ok'); refreshCurrentView(); })
-    .catch(() => { clearTimeout(timeout); _isSaving = false; updateSyncIndicator('offline'); });
+    .then(() => {
+      clearTimeout(timeout); _isSaving = false;
+      updateSyncIndicator('ok'); refreshCurrentView();
+      if (!localSaveOk) {
+        toast('⚠️ Enregistré en ligne, mais la copie locale de secours de cet appareil est pleine (image trop lourde). Ça reste synchronisé sur les autres appareils.', 'error');
+      }
+    })
+    .catch((err) => {
+      clearTimeout(timeout); _isSaving = false;
+      updateSyncIndicator('offline');
+      console.error('Erreur de synchronisation Firebase :', err);
+      toast('❌ Échec de l\'enregistrement en ligne. Vérifie ta connexion et réessaie.', 'error');
+    });
 }
 
 /** Charge les données depuis localStorage (toujours frais, jamais de cache mémoire) */
