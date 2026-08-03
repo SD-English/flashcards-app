@@ -1504,6 +1504,11 @@ firebase.initializeApp(firebaseConfig);
 const db      = firebase.database();
 const dataRef = db.ref('flashcards');
 let _isSaving = false; // évite les boucles de sync Firebase
+let _liveData = null;  // copie fiable en mémoire, à jour même si localStorage est plein
+function safeLocalSet(val) {
+  try { localStorage.setItem('flashcards_data', JSON.stringify(val)); return true; }
+  catch (e) { console.error('Stockage local plein (localStorage) :', e); return false; }
+}
 
 /** Indicateur de connexion Firebase dans la topbar (mode prof uniquement) */
 function updateSyncIndicator(status) {
@@ -1546,7 +1551,8 @@ function initFirebaseSync() {
     // ── MODE PROF/VISITEUR : afficher login IMMÉDIATEMENT ──
     const existing = loadData();
     if (!existing.classes || existing.classes.length === 0) {
-      localStorage.setItem('flashcards_data', JSON.stringify(BACKUP));
+      _liveData = BACKUP;
+      safeLocalSet(BACKUP);
     }
     showView('login');
   } else {
@@ -1569,8 +1575,9 @@ function initFirebaseSync() {
       firstLoad = false;
 
       if (val && val.classes) {
-        // Firebase a des données → mettre à jour localStorage
-        localStorage.setItem('flashcards_data', JSON.stringify(val));
+        // Firebase a des données → mettre à jour la mémoire vive + localStorage (best effort)
+        _liveData = val;
+        safeLocalSet(val);
       } else if (isTeacherMode) {
         // Firebase vide + mode enseignant connecté → envoyer données locales
         const local = loadData();
@@ -1593,7 +1600,8 @@ function initFirebaseSync() {
 
     } else if (val) {
       // Mise à jour temps réel depuis un autre appareil
-      localStorage.setItem('flashcards_data', JSON.stringify(val));
+      _liveData = val;
+      safeLocalSet(val);
       refreshCurrentView();
     }
   }, err => {
@@ -1676,15 +1684,13 @@ function saveData(data) {
     });
   }
 
-  // Sauvegarder en localStorage (immédiat) — ne doit JAMAIS bloquer la sync Firebase,
+  // La mémoire vive est TOUJOURS mise à jour, même si le stockage local est plein —
+  // c'est elle qui garantit que l'appli reste cohérente pendant la session en cours.
+  _liveData = data;
+
+  // Sauvegarder en localStorage (best effort, immédiat) — ne doit JAMAIS bloquer la sync Firebase,
   // même si le quota du navigateur est dépassé (ex: trop d'images accumulées).
-  let localSaveOk = true;
-  try {
-    localStorage.setItem('flashcards_data', JSON.stringify(data));
-  } catch (e) {
-    localSaveOk = false;
-    console.error('Stockage local plein (localStorage) :', e);
-  }
+  const localSaveOk = safeLocalSet(data);
 
   if (!isTeacherMode) {
     updateSyncIndicator(localSaveOk ? 'offline' : 'error');
@@ -1714,8 +1720,9 @@ function saveData(data) {
     });
 }
 
-/** Charge les données depuis localStorage (toujours frais, jamais de cache mémoire) */
+/** Charge les données : priorité à la mémoire vive (toujours à jour), sinon localStorage */
 function loadData() {
+  if (_liveData) return _liveData;
   const raw = localStorage.getItem('flashcards_data');
   if (!raw) return { classes: [] };
   try { return JSON.parse(raw); } catch { return { classes: [] }; }
