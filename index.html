@@ -1376,6 +1376,17 @@
       <button class="btn btn-primary btn-lg" style="width:100%; justify-content:center;" onclick="exportData()">
         📤 Télécharger le fichier de sauvegarde
       </button>
+
+      <div style="margin-top:24px; padding-top:20px; border-top:2px solid var(--border);">
+        <p style="font-size:0.92rem; color:var(--text-muted); margin-bottom:12px; line-height:1.6;">
+          🖼️ Des images importées manuellement peuvent être trop lourdes et bloquer la
+          synchronisation en ligne. Compresse-les pour résoudre le problème.
+        </p>
+        <button class="btn btn-secondary btn-lg" style="width:100%; justify-content:center;" onclick="compressOversizedImages()">
+          🗜️ Compresser les images trop lourdes
+        </button>
+        <div id="compress-status" style="font-size:0.85rem; color:var(--text-muted); margin-top:10px;"></div>
+      </div>
     </div>
 
     <!-- Panneau Import -->
@@ -2631,22 +2642,44 @@ function selectImage(imgEl) {
   }
 }
 
-/** Gère l'upload d'une image locale */
+/** Gère l'upload d'une image locale — redimensionnée et compressée comme les images Pixabay,
+ *  pour éviter d'envoyer des photos brutes (plusieurs Mo) qui font échouer la sync Firebase. */
 function handleImageUpload(event) {
   const file = event.target.files[0];
   if (!file) return;
+  const confirmBtn = document.querySelector('#modal-images .btn-primary');
+  imgSelected = null;
+  if (confirmBtn) { confirmBtn.textContent = '⏳ Conversion…'; confirmBtn.disabled = true; }
+
   const reader = new FileReader();
   reader.onload = (e) => {
-    imgSelected = e.target.result;
-    // Afficher un aperçu
-    const gallery = document.getElementById('img-gallery');
-    gallery.innerHTML = '';
-    const img = document.createElement('img');
-    img.src = imgSelected;
-    img.className = 'selected';
-    img.style.maxWidth = '200px';
-    gallery.appendChild(img);
-    toast('Image chargée ✅', 'success');
+    const tmp = new Image();
+    tmp.onload = () => {
+      const canvas = document.createElement('canvas');
+      const maxW = 400;
+      const ratio = Math.min(1, maxW / tmp.naturalWidth);
+      canvas.width  = Math.round(tmp.naturalWidth  * ratio);
+      canvas.height = Math.round(tmp.naturalHeight * ratio);
+      canvas.getContext('2d').drawImage(tmp, 0, 0, canvas.width, canvas.height);
+      imgSelected = canvas.toDataURL('image/jpeg', 0.85);
+
+      // Afficher un aperçu
+      const gallery = document.getElementById('img-gallery');
+      gallery.innerHTML = '';
+      const img = document.createElement('img');
+      img.src = imgSelected;
+      img.className = 'selected';
+      img.style.maxWidth = '200px';
+      gallery.appendChild(img);
+
+      if (confirmBtn) { confirmBtn.textContent = '✅ Choisir cette image'; confirmBtn.disabled = false; }
+      toast('Image chargée ✅', 'success');
+    };
+    tmp.onerror = () => {
+      if (confirmBtn) { confirmBtn.textContent = '✅ Choisir cette image'; confirmBtn.disabled = false; }
+      toast('❌ Impossible de lire cette image', 'error');
+    };
+    tmp.src = e.target.result;
   };
   reader.readAsDataURL(file);
 }
@@ -3232,6 +3265,68 @@ async function migrateImagesToBase64() {
   saveData(data);
   status.innerHTML = `✅ <strong>${converted}</strong> image(s) converties en permanent !`
     + (failed > 0 ? ` ⚠️ ${failed} non converties (URL expirée — à re-sélectionner)` : '');
+}
+
+/** Recompresse les images déjà enregistrées mais trop lourdes (ex. photos importées
+ *  avant le correctif de compression) — ce sont elles qui font échouer la sync Firebase
+ *  car TOUT le jeu de données est renvoyé à chaque sauvegarde. */
+const OVERSIZED_IMG_THRESHOLD = 150 * 1024; // ~150 Ko en base64
+
+async function compressOversizedImages() {
+  const status = document.getElementById('compress-status');
+  const data   = loadData();
+  let total = 0, done = 0, savedBytes = 0;
+
+  const targets = [];
+  (data.classes || []).forEach(cls =>
+    (cls.packs || []).forEach(pack =>
+      (pack.cards || []).forEach(card => {
+        if (card.img && card.img.startsWith('data:') && card.img.length > OVERSIZED_IMG_THRESHOLD) {
+          targets.push(card);
+        }
+      })
+    )
+  );
+  total = targets.length;
+
+  if (total === 0) {
+    if (status) status.textContent = '✅ Aucune image trop lourde détectée.';
+    return;
+  }
+
+  if (status) status.textContent = `⏳ Compression en cours… 0 / ${total}`;
+
+  const recompress = (dataUrl) => new Promise((resolve) => {
+    const img = new Image();
+    img.onload = () => {
+      const maxW  = 400;
+      const ratio = Math.min(1, maxW / img.naturalWidth);
+      const canvas = document.createElement('canvas');
+      canvas.width  = Math.round(img.naturalWidth  * ratio);
+      canvas.height = Math.round(img.naturalHeight * ratio);
+      canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
+      resolve(canvas.toDataURL('image/jpeg', 0.75));
+    };
+    img.onerror = () => resolve(null);
+    img.src = dataUrl;
+  });
+
+  for (const card of targets) {
+    const before = card.img.length;
+    const after  = await recompress(card.img);
+    if (after && after.length < before) {
+      savedBytes += (before - after.length);
+      card.img = after;
+    }
+    done++;
+    if (status) status.textContent = `⏳ Compression en cours… ${done} / ${total}`;
+  }
+
+  saveData(data);
+  if (status) {
+    status.innerHTML = `✅ <strong>${done}</strong> image(s) compressée(s), `
+      + `~${Math.round(savedBytes / 1024)} Ko libérés. Resynchronisation en ligne lancée.`;
+  }
 }
 
 /** Affiche la modale de transfert */
