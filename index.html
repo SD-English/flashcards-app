@@ -1379,11 +1379,12 @@
 
       <div style="margin-top:24px; padding-top:20px; border-top:2px solid var(--border);">
         <p style="font-size:0.92rem; color:var(--text-muted); margin-bottom:12px; line-height:1.6;">
-          🖼️ Des images importées manuellement peuvent être trop lourdes et bloquer la
-          synchronisation en ligne. Compresse-les pour résoudre le problème.
+          🖼️ Si vous voyez le message « copie locale de secours pleine », vos images
+          prennent trop de place dans le stockage de cet appareil. Recompressez-les
+          pour libérer de la place (à refaire si le message revient).
         </p>
         <button class="btn btn-secondary btn-lg" style="width:100%; justify-content:center;" onclick="compressOversizedImages()">
-          🗜️ Compresser les images trop lourdes
+          🗜️ Compresser toutes les images
         </button>
         <div id="compress-status" style="font-size:0.85rem; color:var(--text-muted); margin-top:10px;"></div>
       </div>
@@ -2599,11 +2600,15 @@ function selectImage(imgEl) {
   // L'image miniature est DÉJÀ chargée dans le navigateur → on la lit directement
   // depuis l'élément img (pas de fetch, pas de CORS)
   try {
+    const natW = imgEl.naturalWidth  || imgEl.width  || 300;
+    const natH = imgEl.naturalHeight || imgEl.height || 200;
+    const maxW = 350;
+    const ratio = Math.min(1, maxW / natW);
     const canvas = document.createElement('canvas');
-    canvas.width  = imgEl.naturalWidth  || imgEl.width  || 300;
-    canvas.height = imgEl.naturalHeight || imgEl.height || 200;
-    canvas.getContext('2d').drawImage(imgEl, 0, 0);
-    imgSelected = canvas.toDataURL('image/jpeg', 0.85);
+    canvas.width  = Math.round(natW * ratio);
+    canvas.height = Math.round(natH * ratio);
+    canvas.getContext('2d').drawImage(imgEl, 0, 0, canvas.width, canvas.height);
+    imgSelected = canvas.toDataURL('image/jpeg', 0.75);
     if (confirmBtn) { confirmBtn.textContent = '✅ Choisir cette image'; confirmBtn.disabled = false; }
   } catch(e) {
     // CORS sur la miniature → fallback fetch via blob URL de la preview
@@ -2617,13 +2622,13 @@ function selectImage(imgEl) {
           const tmp = new Image();
           tmp.onload = () => {
             const canvas = document.createElement('canvas');
-            const maxW = 400;
+            const maxW = 350;
             const ratio = Math.min(1, maxW / tmp.naturalWidth);
             canvas.width  = Math.round(tmp.naturalWidth  * ratio);
             canvas.height = Math.round(tmp.naturalHeight * ratio);
             canvas.getContext('2d').drawImage(tmp, 0, 0, canvas.width, canvas.height);
             URL.revokeObjectURL(blobURL);
-            resolve(canvas.toDataURL('image/jpeg', 0.85));
+            resolve(canvas.toDataURL('image/jpeg', 0.75));
           };
           tmp.onerror = () => { URL.revokeObjectURL(blobURL); reject(); };
           tmp.src = blobURL;
@@ -2656,12 +2661,12 @@ function handleImageUpload(event) {
     const tmp = new Image();
     tmp.onload = () => {
       const canvas = document.createElement('canvas');
-      const maxW = 400;
+      const maxW = 350;
       const ratio = Math.min(1, maxW / tmp.naturalWidth);
       canvas.width  = Math.round(tmp.naturalWidth  * ratio);
       canvas.height = Math.round(tmp.naturalHeight * ratio);
       canvas.getContext('2d').drawImage(tmp, 0, 0, canvas.width, canvas.height);
-      imgSelected = canvas.toDataURL('image/jpeg', 0.85);
+      imgSelected = canvas.toDataURL('image/jpeg', 0.75);
 
       // Afficher un aperçu
       const gallery = document.getElementById('img-gallery');
@@ -3267,30 +3272,27 @@ async function migrateImagesToBase64() {
     + (failed > 0 ? ` ⚠️ ${failed} non converties (URL expirée — à re-sélectionner)` : '');
 }
 
-/** Recompresse les images déjà enregistrées mais trop lourdes (ex. photos importées
- *  avant le correctif de compression) — ce sont elles qui font échouer la sync Firebase
- *  car TOUT le jeu de données est renvoyé à chaque sauvegarde. */
-const OVERSIZED_IMG_THRESHOLD = 150 * 1024; // ~150 Ko en base64
-
+/** Recompresse TOUTES les images déjà enregistrées (pas seulement les plus lourdes) :
+ *  la copie locale de secours de chaque appareil a un quota bien plus petit (souvent
+ *  5-10 Mo) que Firebase, et c'est le cumul de nombreuses images "moyennes" — pas
+ *  seulement quelques très grosses — qui finit par le remplir. */
 async function compressOversizedImages() {
   const status = document.getElementById('compress-status');
   const data   = loadData();
-  let total = 0, done = 0, savedBytes = 0;
+  let done = 0, savedBytes = 0;
 
   const targets = [];
   (data.classes || []).forEach(cls =>
     (cls.packs || []).forEach(pack =>
       (pack.cards || []).forEach(card => {
-        if (card.img && card.img.startsWith('data:') && card.img.length > OVERSIZED_IMG_THRESHOLD) {
-          targets.push(card);
-        }
+        if (card.img && card.img.startsWith('data:')) targets.push(card);
       })
     )
   );
-  total = targets.length;
+  const total = targets.length;
 
   if (total === 0) {
-    if (status) status.textContent = '✅ Aucune image trop lourde détectée.';
+    if (status) status.textContent = '✅ Aucune image à compresser.';
     return;
   }
 
@@ -3299,13 +3301,13 @@ async function compressOversizedImages() {
   const recompress = (dataUrl) => new Promise((resolve) => {
     const img = new Image();
     img.onload = () => {
-      const maxW  = 400;
+      const maxW  = 350;
       const ratio = Math.min(1, maxW / img.naturalWidth);
       const canvas = document.createElement('canvas');
       canvas.width  = Math.round(img.naturalWidth  * ratio);
       canvas.height = Math.round(img.naturalHeight * ratio);
       canvas.getContext('2d').drawImage(img, 0, 0, canvas.width, canvas.height);
-      resolve(canvas.toDataURL('image/jpeg', 0.75));
+      resolve(canvas.toDataURL('image/jpeg', 0.7));
     };
     img.onerror = () => resolve(null);
     img.src = dataUrl;
@@ -3324,7 +3326,7 @@ async function compressOversizedImages() {
 
   saveData(data);
   if (status) {
-    status.innerHTML = `✅ <strong>${done}</strong> image(s) compressée(s), `
+    status.innerHTML = `✅ <strong>${done}</strong> image(s) traitée(s), `
       + `~${Math.round(savedBytes / 1024)} Ko libérés. Resynchronisation en ligne lancée.`;
   }
 }
